@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ruin Run</title>
+<link href="https://fonts.googleapis.com/css2?family=Bowlby+One&display=swap" rel="stylesheet">
+<style>
+  :root { --night:#10252a; --sand:#f1deb4; --amber:#ffb627; --clay:#c2502f; --moss:#6f9e5c; }
+  * { box-sizing:border-box; margin:0; }
+  html,body { height:100%; overflow:hidden; background:var(--night); color:var(--sand);
+              font-family:system-ui,-apple-system,"Segoe UI",sans-serif; user-select:none; }
+  canvas { display:block; }
+  .display { font-family:"Bowlby One",Impact,sans-serif; letter-spacing:.01em; }
+
+  /* HUD */
+  #hud { position:fixed; inset:0; pointer-events:none; display:none; }
+  #hud .row { position:absolute; top:16px; left:20px; right:20px; display:flex; justify-content:space-between; align-items:flex-start; }
+  #score { font-size:clamp(2rem,6vw,3.6rem); line-height:1; text-shadow:0 3px 0 rgba(16,37,42,.55); }
+  #sub { font-size:.95rem; opacity:.85; margin-top:6px; }
+  #coins { font-size:clamp(1.4rem,4vw,2.2rem); color:var(--amber); text-shadow:0 2px 0 rgba(16,37,42,.55); text-align:right; }
+  #mult { font-size:.95rem; text-align:right; margin-top:6px; }
+  #pop { position:absolute; top:34%; left:50%; transform:translateX(-50%); font-size:2rem; color:var(--amber);
+         opacity:0; text-shadow:0 2px 0 var(--night); }
+  #pop.go { animation:pop .6s ease-out; }
+  @keyframes pop { 0%{opacity:1;transform:translate(-50%,10px) scale(.8)} 100%{opacity:0;transform:translate(-50%,-40px) scale(1.15)} }
+
+  /* Start + game over screens */
+  .screen { position:fixed; inset:0; display:none; align-items:flex-end; padding:min(8vh,64px) min(7vw,80px);
+            background:linear-gradient(to top, rgba(16,37,42,.92) 0%, rgba(16,37,42,.55) 55%, rgba(16,37,42,.1) 100%); }
+  .screen.show { display:flex; }
+  .panel { max-width:520px; text-align:left; }
+  h1 { font-size:clamp(3rem,10vw,6rem); line-height:.95; color:var(--amber); text-shadow:0 5px 0 var(--clay); }
+  h2 { font-size:clamp(2.4rem,8vw,4.4rem); line-height:1; color:var(--clay); text-shadow:0 4px 0 var(--sand); }
+  .panel p { margin:16px 0 0; line-height:1.5; font-size:1.05rem; }
+  .keys { margin:20px 0 26px; display:grid; grid-template-columns:auto 1fr; gap:8px 14px; font-size:.98rem; align-items:center; }
+  kbd { display:inline-block; min-width:2.1em; text-align:center; padding:3px 8px; border-radius:6px; background:var(--sand);
+        color:var(--night); font:600 .85rem system-ui; box-shadow:0 2px 0 #b79a63; margin-right:4px; }
+  .stats { margin:18px 0 26px; display:grid; grid-template-columns:auto auto; gap:6px 28px; justify-content:start; font-size:1.1rem; }
+  .stats b { color:var(--amber); font-weight:700; text-align:right; }
+  button { pointer-events:auto; cursor:pointer; border:0; border-radius:10px; padding:14px 34px; font-size:1.3rem;
+           background:var(--amber); color:var(--night); box-shadow:0 5px 0 #b27a0b; transition:transform .08s, box-shadow .08s; }
+  button:hover { transform:translateY(-1px); }
+  button:active { transform:translateY(4px); box-shadow:0 1px 0 #b27a0b; }
+  button:focus-visible { outline:3px solid var(--sand); outline-offset:3px; }
+  @media (prefers-reduced-motion:reduce){ #pop.go{animation:none; opacity:1} button{transition:none} }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div class="row">
+    <div><div id="score" class="display">0</div><div id="sub">0 m</div></div>
+    <div><div id="coins" class="display">0 coins</div><div id="mult">x1</div></div>
+  </div>
+  <div id="pop" class="display"></div>
+</div>
+
+<div id="start" class="screen show">
+  <div class="panel">
+    <h1 class="display">Ruin<br>Run</h1>
+    <p>The temple is crumbling behind you. Keep running, grab the gold, and don’t stop.</p>
+    <div class="keys">
+      <span><kbd>←</kbd><kbd>→</kbd> or <kbd>A</kbd><kbd>D</kbd></span><span>Switch lane</span>
+      <span><kbd>↑</kbd> or <kbd>Space</kbd></span><span>Jump hurdles and gaps</span>
+      <span><kbd>↓</kbd> or <kbd>S</kbd></span><span>Slide under beams (mid-air: drop fast)</span>
+    </div>
+    <button id="btnStart" class="display">Start running</button>
+  </div>
+</div>
+
+<div id="over" class="screen">
+  <div class="panel">
+    <h2 class="display">You fell</h2>
+    <p id="cause">The ruins claim another runner.</p>
+    <div class="stats">
+      <span>Score</span><b id="oScore">0</b>
+      <span>Distance</span><b id="oDist">0 m</b>
+      <span>Coins</span><b id="oCoins">0</b>
+      <span>Best</span><b id="oBest">0</b>
+    </div>
+    <button id="btnRestart" class="display">Run again</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+'use strict';
+
+/* ================= CONSTANTS ================= */
+const LANES = [-2.5, 0, 2.5];        // x position of left / center / right lane
+const SEG_L = 40;                    // length of one track segment
+const GRAV = 32, JUMP_V = 12.5;      // custom gravity + jump velocity -> parabolic jump (~0.78 s, 2.4 m high)
+const SLIDE_T = 0.7;                 // slide duration in seconds
+const BASE_SPEED = 16, MAX_SPEED = 38, ACCEL = 0.28; // forward speed ramps up over time
+const H_STAND = 1.9, H_SLIDE = 0.95, HALF_W = 0.4;   // player AABB dimensions
+const $ = id => document.getElementById(id);
+
+/* ================= RENDERER / SCENE ================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+
+const DUSK = 0xe8b88a;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(DUSK);
+scene.fog = new THREE.Fog(DUSK, 60, 190);
+
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 260);
+
+// Ambient fill + shadow-casting sun that follows the player
+scene.add(new THREE.AmbientLight(0xffe6c8, 0.75));
+const sun = new THREE.DirectionalLight(0xfff0d0, 0.95);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -26, right: 26, top: 30, bottom: -30, near: 1, far: 90 });
+sun.shadow.bias = -0.0005;
+scene.add(sun, sun.target);
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+});
+
+/* ================= SHARED GEOMETRY / MATERIALS (low-poly, flat shaded) ================= */
+const BOX = new THREE.BoxGeometry(1, 1, 1);
+const CONE = new THREE.ConeGeometry(1, 1, 5);
+const BALL = new THREE.IcosahedronGeometry(1, 1);
+const COIN_G = new THREE.CylinderGeometry(0.38, 0.38, 0.09, 10).rotateX(Math.PI / 2);
+const mat = (c, extra = {}) => new THREE.MeshStandardMaterial(Object.assign({ color: c, flatShading: true, roughness: 1 }, extra));
+const M = {
+  floor: mat(0xcfa86e), floorDark: mat(0xa9824a), stone: mat(0x8f8a7c), clay: mat(0xc2502f),
+  moss: mat(0x55814a), trunk: mat(0x6b4a2f), leaf: mat(0x3f7a47),
+  gold: mat(0xffb627, { emissive: 0x6a4300, metalness: .3, roughness: .5 }),
+  torch: mat(0xffd36a, { emissive: 0xffa010 }),
+  skin: mat(0xe0a47a), shirt: mat(0x2f6f8f), pants: mat(0x3a3a4a), pack: mat(0xc2502f), cap: mat(0xffb627)
+};
+
+/** Adds a scaled unit box to `parent` and returns it. */
+function box(parent, material, x, y, z, w, h, d, shadow = true) {
+  const m = new THREE.Mesh(BOX, material);
+  m.position.set(x, y, z); m.scale.set(w, h, d);
+  m.castShadow = shadow; m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+/* ================= PLAYER MODEL (origin at the feet) ================= */
+const player = new THREE.Group();
+const body = new THREE.Group();
+player.add(body); scene.add(player);
+box(body, M.shirt, 0, 1.05, 0, 0.7, 0.8, 0.4);                 // torso
+box(body, M.pack, 0, 1.1, 0.3, 0.5, 0.55, 0.25);               // backpack
+const head = new THREE.Mesh(BALL, M.skin); head.scale.setScalar(0.26); head.position.y = 1.65; head.castShadow = true; body.add(head);
+box(body, M.cap, 0, 1.84, 0, 0.5, 0.12, 0.5);                  // hat
+/** Limb with its pivot at the top (hip / shoulder) so it can swing. */
+function limb(material, w, h, x, y) {
+  const pivot = new THREE.Group(); pivot.position.set(x, y, 0);
+  box(pivot, material, 0, -h / 2, 0, w, h, w);
+  body.add(pivot); return pivot;
+}
+const legL = limb(M.pants, 0.28, 0.75, -0.17, 0.75), legR = limb(M.pants, 0.28, 0.75, 0.17, 0.75);
+const armL = limb(M.skin, 0.2, 0.65, -0.46, 1.42), armR = limb(M.skin, 0.2, 0.65, 0.46, 1.42);
+
+/* ================= WORLD GENERATION ================= */
+const segments = [];   // active segments, front to back
+const pool = [];       // recycled THREE.Group objects
+let obstacles = [];    // {box: THREE.Box3, seg}
+let coinList = [];     // {mesh, x, y, z, seg, got}
+let nextIdx = -1;      // index of the next segment to spawn (idx -1 is the safe start pad behind the player)
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pickLanes = n => [0, 1, 2].sort(() => Math.random() - 0.5).slice(0, n);
+
+// Weighted list of segment types
+const TYPES = ['straight', 'straight', 'hurdle', 'hurdle', 'barrier', 'barrier', 'wall', 'wall', 'gap', 'turn'];
+
+/** Registers a solid AABB in world space for collision tests. */
+function addObstacle(seg, x, y, lz, w, h, d) {
+  const z = seg.zc + lz;
+  obstacles.push({ seg, box: new THREE.Box3(new THREE.Vector3(x - w / 2, y - h / 2, z - d / 2), new THREE.Vector3(x + w / 2, y + h / 2, z + d / 2)) });
+}
+
+/** Places a line of coins in one lane. `arc` makes the coins follow a jump arc over a gap. */
+function addCoins(seg, lane, z0, n, step, arc) {
+  for (let i = 0; i < n; i++) {
+    const lz = z0 + i * step;
+    const y = arc ? 1 + 2.2 * Math.max(0, 1 - (lz / 6) ** 2) : 1;
+    const m = new THREE.Mesh(COIN_G, M.gold);
+    m.position.set(LANES[lane], y, lz); m.castShadow = true;
+    seg.group.add(m);
+    coinList.push({ mesh: m, seg, x: LANES[lane], y, z: seg.zc + lz, got: false });
+  }
+}
+
+function buildSegment(seg) {
+  const g = seg.group, type = seg.type;
+
+  /* --- floor (two halves with a hole for gap segments) --- */
+  if (type === 'gap') {
+    const half = SEG_L / 2 - 3, cz = 3 + half / 2;
+    box(g, M.floor, 0, -0.5, -cz, 8, 1, half); box(g, M.floor, 0, -0.5, cz, 8, 1, half);
+    seg.gap = { z0: seg.zc - 3, z1: seg.zc + 3 };   // world-space hole
+  } else {
+    box(g, M.floor, 0, -0.5, 0, 8, 1, SEG_L);
+    box(g, M.floorDark, -1.25, 0.01, 0, 0.08, 0.02, SEG_L, false);   // lane dividers
+    box(g, M.floorDark, 1.25, 0.01, 0, 0.08, 0.02, SEG_L, false);
+  }
+  for (let k = 0; k < 8; k++) {                                       // cross stripes give a sense of speed
+    const z = -SEG_L / 2 + 2.5 + k * 5;
+    if (!(type === 'gap' && Math.abs(z) < 4)) box(g, M.floorDark, 0, 0.01, z, 8, 0.02, 0.25, false);
+  }
+
+  /* --- scenery: side ground, pillars, trees --- */
+  for (const s of [-1, 1]) {
+    box(g, M.moss, s * 12, -0.9, 0, 16, 1, SEG_L);
+    for (const z of [-15, -5, 5, 15]) box(g, M.stone, s * 4.5, 1 + rnd(0, 1), z, 0.9, 2 + rnd(0, 2), 0.9);
+    for (let i = 0; i < 3; i++) {
+      const x = s * rnd(7, 15), z = rnd(-19, 19), h = rnd(2.5, 5);
+      box(g, M.trunk, x, h * 0.3, z, 0.5, h * 0.6, 0.5);
+      const leaf = new THREE.Mesh(CONE, M.leaf);
+      leaf.position.set(x, h * 0.6 + h * 0.5, z); leaf.scale.set(1.8, h, 1.8); leaf.castShadow = true; g.add(leaf);
+    }
+  }
+
+  /* --- gameplay content --- */
+  const rows = [-14, 12];   // z of obstacle rows (leaves the middle free for coins / gap)
+  if (type === 'hurdle') {
+    for (const z of rows) for (const l of pickLanes(Math.ceil(rnd(0.01, 3)))) {   // low log: jump over it
+      box(g, M.clay, LANES[l], 0.5, z, 2.2, 1, 0.6); addObstacle(seg, LANES[l], 0.5, z, 2.2, 1, 0.6);
+    }
+  } else if (type === 'barrier') {
+    for (const z of rows) for (const l of pickLanes(Math.ceil(rnd(0.01, 2)))) {   // high beam: slide under it
+      const x = LANES[l];
+      box(g, M.stone, x, 1.5, z, 2.4, 1, 0.5); addObstacle(seg, x, 1.5, z, 2.4, 1, 0.5);
+      box(g, M.stone, x - 1.1, 1.1, z, 0.25, 2.2, 0.25); box(g, M.stone, x + 1.1, 1.1, z, 0.25, 2.2, 0.25);  // posts (visual only)
+    }
+  } else if (type === 'wall') {
+    for (const z of rows) for (const l of pickLanes(Math.ceil(rnd(0.01, 2)))) {   // solid block: change lane
+      box(g, M.stone, LANES[l], 1.5, z, 2.2, 3, 1.2); addObstacle(seg, LANES[l], 1.5, z, 2.2, 3, 1.2);
+    }
+  } else if (type === 'turn') {
+    // Decorative temple gate with torches and a direction arrow; the camera banks while passing through.
+    seg.dir = Math.random() < 0.5 ? -1 : 1;
+    for (const s of [-1, 1]) { box(g, M.stone, s * 4.3, 3.5, 0, 1, 7, 1); box(g, M.torch, s * 3.7, 2.4, 0, 0.3, 0.3, 0.3, false); }
+    box(g, M.stone, 0, 7.2, 0, 10, 1, 1.4);
+    for (let k = 0; k < 3; k++) {
+      const z = -8 - k * 3;
+      box(g, M.torch, 0, 0.03, z, 3, 0.02, 0.25, false);
+      const a = box(g, M.torch, seg.dir * 1.5, 0.03, z, 1.1, 0.02, 0.25, false); a.rotation.y = 0.8;
+      const b = box(g, M.torch, seg.dir * 1.5, 0.03, z, 1.1, 0.02, 0.25, false); b.rotation.y = -0.8;
+    }
+  }
+
+  // Coins: gap segments get an arc to jump through; others get a straight line in a random lane
+  const lane = Math.floor(rnd(0, 3));
+  if (type === 'gap') addCoins(seg, lane, -5, 7, 10 / 6, true);
+  else if (type === 'straight' || type === 'turn') addCoins(seg, lane, type === 'turn' ? 2 : -14, 8, 2, false);
+  else addCoins(seg, lane, -6, 5, 3, false);
+}
+
+function spawnSegment() {
+  const idx = nextIdx++;
+  const g = pool.pop() || new THREE.Group();
+  while (g.children.length) g.remove(g.children[0]);
+  const zc = -(idx + 0.5) * SEG_L;
+  g.position.set(0, 0, zc);
+  let type = idx < 2 ? 'straight' : TYPES[Math.floor(Math.random() * TYPES.length)];
+  const prev = segments[segments.length - 1];
+  if (type === 'gap' && prev && prev.type === 'gap') type = 'straight';   // never two gaps in a row
+  const seg = { idx, group: g, type, zc, gap: null, dir: 0 };
+  buildSegment(seg);
+  scene.add(g); segments.push(seg);
+}
+
+/** Removes a segment from the world and returns its group to the pool. */
+function recycleSegment(seg) {
+  scene.remove(seg.group); pool.push(seg.group);
+  obstacles = obstacles.filter(o => o.seg !== seg);
+  coinList = coinList.filter(c => c.seg !== seg);
+}
+
+/* ================= GAME STATE ================= */
+let state = 'menu';   // 'menu' | 'play' | 'over'
+let px, py, pz, vy, laneIdx, slideT, speed, dist, coins, bonus, shake, bank, runPhase, clock, deathTimer, falling;
+let particles = [];
+let best = 0;
+try { best = +localStorage.getItem('ruinrun-best') || 0; } catch (e) { /* storage unavailable */ }
+
+function resetGame() {
+  segments.slice().forEach(recycleSegment); segments.length = 0;
+  nextIdx = -1;
+  px = 0; py = 0; pz = 0; vy = 0; laneIdx = 1; slideT = 0; speed = BASE_SPEED;
+  dist = 0; coins = 0; bonus = 0; shake = 0; bank = 0; runPhase = 0; clock = 0; falling = false;
+  player.rotation.set(0, 0, 0); player.scale.set(1, 1, 1);
+  coinList.forEach(c => c.mesh.visible = true);
+  particles.forEach(p => scene.remove(p.mesh)); particles = [];
+  camera.position.set(0, 4.6, 8.5);
+  updateHud();
+}
+
+const multiplier = () => Math.min(5, 1 + Math.floor(coins / 10));   // +1x every 10 coins, max x5
+const score = () => Math.floor(dist) + bonus;
+
+function updateHud() {
+  $('score').textContent = score().toLocaleString();
+  $('sub').textContent = Math.floor(dist) + ' m';
+  $('coins').textContent = coins + (coins === 1 ? ' coin' : ' coins');
+  $('mult').textContent = 'x' + multiplier() + ' multiplier';
+}
+
+function startGame() {
+  initAudio(); resetGame(); state = 'play';
+  $('start').classList.remove('show'); $('over').classList.remove('show'); $('hud').style.display = 'block';
+}
+
+let hitObstacle = false, hitVz = 0;   // crash state: did we hit a solid obstacle, and knockback speed
+
+function gameOver(cause, hitBox) {
+  if (state !== 'play') return;
+  state = 'over'; deathTimer = 0; shake = 0.6; slideT = 0;
+  hitObstacle = !!hitBox;
+  if (hitBox) {
+    pz = hitBox.max.z + HALF_W;   // snap player back so he stands against the obstacle's front face
+    vy = 3; hitVz = 5;            // small hop and knockback away from the obstacle
+  } else { hitVz = 0; }
+  sfx(160, 0.5, 'sawtooth', 50);
+  const s = score();
+  if (s > best) { best = s; try { localStorage.setItem('ruinrun-best', best); } catch (e) { /* ignore */ } }
+  $('cause').textContent = cause;
+  $('oScore').textContent = s.toLocaleString(); $('oDist').textContent = Math.floor(dist) + ' m';
+  $('oCoins').textContent = coins; $('oBest').textContent = best.toLocaleString();
+  setTimeout(() => { if (state === 'over') $('over').classList.add('show'); }, 700);
+}
+/* ================= AUDIO (WebAudio, no asset files) ================= */
+let actx = null;
+function initAudio() { if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { /* no audio */ } } if (actx && actx.state === 'suspended') actx.resume(); }
+function sfx(freq, dur, type = 'square', endFreq = freq) {
+  if (!actx) return;
+  const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+  o.type = type; o.frequency.setValueAtTime(freq, t); o.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
+  g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g).connect(actx.destination); o.start(t); o.stop(t + dur);
+}
+
+/* ================= INPUT ================= */
+const onGround = () => py <= 0.001 && !falling;
+function moveLane(d) { if (state === 'play') { const n = laneIdx + d; if (n >= 0 && n <= 2) { laneIdx = n; sfx(300, 0.08, 'triangle', 420); } } }
+function jump() { if (state === 'play' && onGround()) { vy = JUMP_V; slideT = 0; sfx(380, 0.22, 'square', 760); } }
+function slide() {
+  if (state !== 'play') return;
+  slideT = SLIDE_T;
+  if (!onGround() && !falling) vy = -16;   // pressing down mid-air slams the player to the ground
+  sfx(220, 0.2, 'triangle', 110);
+}
+
+addEventListener('keydown', e => {
+  const k = e.code;
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(k)) e.preventDefault();
+  if (state === 'menu' && (k === 'Space' || k === 'Enter')) return startGame();
+  if (state === 'over' && $('over').classList.contains('show') && (k === 'Space' || k === 'Enter')) return startGame();
+  if (k === 'ArrowLeft' || k === 'KeyA') moveLane(-1);
+  else if (k === 'ArrowRight' || k === 'KeyD') moveLane(1);
+  else if (k === 'ArrowUp' || k === 'KeyW' || k === 'Space') jump();
+  else if (k === 'ArrowDown' || k === 'KeyS') slide();
+});
+
+// Touch: swipe left/right/up/down
+let t0 = null;
+addEventListener('touchstart', e => { t0 = [e.touches[0].clientX, e.touches[0].clientY]; }, { passive: true });
+addEventListener('touchend', e => {
+  if (!t0) return;
+  const dx = e.changedTouches[0].clientX - t0[0], dy = e.changedTouches[0].clientY - t0[1]; t0 = null;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
+  if (Math.abs(dx) > Math.abs(dy)) moveLane(dx > 0 ? 1 : -1); else if (dy < 0) jump(); else slide();
+}, { passive: true });
+
+$('btnStart').addEventListener('click', e => { e.target.blur(); startGame(); });
+$('btnRestart').addEventListener('click', e => { e.target.blur(); startGame(); });
+
+/* ================= UPDATE ================= */
+const pBox = new THREE.Box3(), cBox = new THREE.Box3();
+
+function spawnBurst(x, y, z) {
+  for (let i = 0; i < 6; i++) {
+    const m = new THREE.Mesh(BOX, M.torch); m.scale.setScalar(0.14); m.position.set(x, y, z); scene.add(m);
+    particles.push({ mesh: m, vx: rnd(-3, 3), vy: rnd(2, 6), vz: rnd(-3, 3), life: 0.5 });
+  }
+}
+
+function updatePlay(dt) {
+  clock += dt;
+  speed = Math.min(MAX_SPEED, BASE_SPEED + clock * ACCEL);   // gradual speed-up
+  pz -= speed * dt; dist = -pz;                              // run along -Z (camera sits behind at +Z)
+  px += (LANES[laneIdx] - px) * Math.min(1, dt * 14);        // smooth lane switch
+  if (slideT > 0) slideT -= dt;
+
+  // Streaming world: spawn ahead, recycle what is behind the player
+  while (nextIdx * SEG_L < -pz + 220) spawnSegment();
+  while (segments.length && -(segments[0].idx + 1) * SEG_L > pz + 20) recycleSegment(segments.shift());
+
+  // Is the player over a hole in the track?
+  const cur = segments.find(s => pz <= -s.idx * SEG_L && pz > -(s.idx + 1) * SEG_L);
+  const inGap = !!(cur && cur.gap && pz < cur.gap.z1 - 0.2 && pz > cur.gap.z0 + 0.2);
+
+  // Vertical physics: y += vy*dt, vy -= g*dt
+  vy -= GRAV * dt; py += vy * dt;
+  if (py <= 0) {
+    if (inGap || falling) falling = true;
+    else { py = 0; vy = 0; }
+  }
+  if (falling && py < -6) return gameOver('You missed the jump and dropped into the pit.');
+
+  // AABB collision: player box vs obstacles
+  const h = slideT > 0 ? H_SLIDE : H_STAND;
+  pBox.min.set(px - HALF_W, py + 0.05, pz - HALF_W); pBox.max.set(px + HALF_W, py + h, pz + HALF_W);
+  for (const o of obstacles) if (pBox.intersectsBox(o.box)) return gameOver('You ran into an obstacle.', o.box);
+
+  // Coin pickups (AABB overlap)
+  for (const c of coinList) {
+    if (c.got || Math.abs(c.z - pz) > 1.5) continue;
+    cBox.min.set(c.x - 0.38, c.y - 0.38, c.z - 0.1); cBox.max.set(c.x + 0.38, c.y + 0.38, c.z + 0.1);
+    if (pBox.intersectsBox(cBox)) {
+      c.got = true; c.mesh.visible = false; coins++;
+      const m = multiplier(); bonus += 10 * m;
+      spawnBurst(c.x, c.y, c.z);
+      sfx(900 + Math.min(coins % 10, 9) * 60, 0.12, 'square', 1500);
+      const pop = $('pop'); pop.textContent = '+' + 10 * m + (m > 1 ? '  x' + m : '');
+      pop.classList.remove('go'); void pop.offsetWidth; pop.classList.add('go');
+    }
+  }
+
+  // Camera bank while passing through a temple gate
+  bank += ((cur && cur.type === 'turn' ? -cur.dir * 0.12 : 0) - bank) * Math.min(1, dt * 3);
+  updateHud();
+}
+
+function animatePlayer(dt) {
+  player.position.set(px, py, pz);
+  const sliding = slideT > 0 && state === 'play';
+  player.scale.y += ((sliding ? 0.5 : 1) - player.scale.y) * Math.min(1, dt * 20);   // crouch = shrink the model
+if (state === 'over') {
+    // Hit an obstacle: fall backwards onto the floor. Fell into a gap: tumble forward.
+    player.rotation.x = hitObstacle ? Math.min(player.rotation.x + dt * 5, 1.45)
+                                    : Math.max(player.rotation.x - dt * 5, -1.5);
+    return;
+  }
+  runPhase += (state === 'play' ? speed : 6) * 0.55 * dt;
+  const air = state === 'play' && !onGround();
+  const sw = air ? 0 : Math.sin(runPhase) * 0.95;
+  legL.rotation.x = air ? -0.7 : sw;  legR.rotation.x = air ? 0.4 : -sw;
+  armL.rotation.x = air ? -2.4 : -sw; armR.rotation.x = air ? -2.4 : sw;
+  body.position.y = air || sliding ? 0 : Math.abs(Math.sin(runPhase)) * 0.07;
+}
+
+function updateCamera(dt) {
+  const k = Math.min(1, dt * 6);
+  camera.position.x += (px * 0.65 - camera.position.x) * k;
+  camera.position.y += (4.6 + Math.max(0, py) * 0.3 - camera.position.y) * k;
+  camera.position.z = pz + 8.5;                              // fixed chase distance behind the player
+  if (shake > 0) { camera.position.x += rnd(-1, 1) * shake; camera.position.y += rnd(-1, 1) * shake; shake = Math.max(0, shake - dt * 1.5); }
+  camera.lookAt(px * 0.35, 1.4, pz - 9);
+  camera.rotateZ(bank);
+  camera.fov = 62 + (speed - BASE_SPEED) * 0.35; camera.updateProjectionMatrix();   // slight FOV widening for speed feel
+  // Sun tracks the player so shadows stay sharp near the action
+  sun.position.set(px + 14, 26, pz + 6); sun.target.position.set(px, 0, pz - 6);
+}
+
+/* ================= MAIN LOOP ================= */
+resetGame();
+for (let i = 0; i < 6; i++) spawnSegment();   // backdrop for the start screen
+let last = performance.now();
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+
+  if (state === 'play') updatePlay(dt);
+  else if (state === 'over') {   // keep physics running so a fall or tumble finishes
+    deathTimer += dt;
+    vy -= GRAV * dt; py += vy * dt;                        // gravity (pit fall, or hop after a crash)
+    if (!falling && py <= 0) { py = 0; vy = 0; }           // land on the floor
+    pz += hitVz * dt; hitVz = Math.max(0, hitVz - 10 * dt); // knockback away from the obstacle, easing to a stop
+  }
+  for (const c of coinList) if (!c.got) c.mesh.rotation.y += dt * 3;   // spinning coins
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i]; p.life -= dt;
+    p.mesh.position.x += p.vx * dt; p.mesh.position.y += p.vy * dt; p.mesh.position.z += p.vz * dt; p.vy -= 12 * dt;
+    p.mesh.scale.setScalar(Math.max(0.01, p.life * 0.28));
+    if (p.life <= 0) { scene.remove(p.mesh); particles.splice(i, 1); }
+  }
+  animatePlayer(dt);
+  updateCamera(dt);
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
